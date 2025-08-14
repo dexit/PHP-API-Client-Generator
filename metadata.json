@@ -1,0 +1,6 @@
+{
+  "name": "PHP API Client Generator",
+  "description": "Generate modern, PSR-compliant PHP API client code. Define endpoints with JSON response schemas to create typed DTOs, choose from multiple authentication strategies including chained token requests, and optionally generate a database handler for persistence.",
+  "requestFramePermissions": [],
+  "prompt": ""
+}
