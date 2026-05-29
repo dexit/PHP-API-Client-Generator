@@ -119,12 +119,15 @@ export const parseOpenApiSpec = async (spec: string): Promise<{ endpoints: Endpo
                     }
                 }
                 
+                // Added missing 'extractionRules' and 'headers' properties to satisfy Endpoint interface
                 const endpoint: Endpoint = {
                     id: `${method}-${path}-${Date.now()}`, // Add timestamp for more unique ID
                     name: op.operationId || generateOperationName(method, path),
                     method: httpMethod,
                     path: path,
                     responsePayload: responsePayload,
+                    extractionRules: [],
+                    headers: [],
                     dbConfig: {
                         enabled: false,
                         dbType: DatabaseType.MARIADB,

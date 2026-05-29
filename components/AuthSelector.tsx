@@ -1,8 +1,9 @@
 
-import React from 'react';
-import { AuthConfig, AuthMethod, HttpMethod } from '../types';
+import React, { useState } from 'react';
+import { AuthConfig, AuthMethod, HeaderPair } from '../types';
 import { AUTH_METHOD_OPTIONS, HTTP_METHODS } from '../constants';
-import { LinkIcon } from './Icons';
+import { LinkIcon, TagIcon, PlusIcon, TrashIcon, SparklesIcon } from './Icons';
+import HeaderEditor from './HeaderEditor';
 
 interface AuthSelectorProps {
   authConfig: AuthConfig;
@@ -10,11 +11,13 @@ interface AuthSelectorProps {
 }
 
 const AuthSelector: React.FC<AuthSelectorProps> = ({ authConfig, setAuthConfig }) => {
+  const [newScope, setNewScope] = useState('');
+  const [newArg, setNewArg] = useState('');
+
   const handleMethodChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const newMethod = e.target.value as AuthMethod;
     let newConfig: AuthConfig = { method: newMethod };
 
-    // Set sensible defaults when switching
     switch (newMethod) {
         case AuthMethod.BEARER:
             newConfig = { ...newConfig, tokenVariableName: '$apiToken' };
@@ -30,9 +33,15 @@ const AuthSelector: React.FC<AuthSelectorProps> = ({ authConfig, setAuthConfig }
                 ...newConfig, 
                 tokenEndpointPath: '/oauth/token',
                 tokenEndpointMethod: 'POST',
-                requestBody: '{\n  "grant_type": "client_credentials",\n  "client_id": "YOUR_CLIENT_ID",\n  "client_secret": "YOUR_CLIENT_SECRET"\n}',
+                tokenRequestContentType: 'application/x-www-form-urlencoded',
+                tokenRequestHeaders: [],
+                tokenRequestQueryParams: [],
+                tokenRequestScopes: ['openid', 'profile'],
+                requestBody: 'grant_type=client_credentials&client_id={{clientId}}&client_secret={{clientSecret}}',
                 tokenPathInResponse: 'access_token',
+                tokenExpiresInPath: 'expires_in',
                 schemeInHeader: 'Bearer',
+                constructorArgs: ['clientId', 'clientSecret']
             };
             break;
     }
@@ -46,93 +55,83 @@ const AuthSelector: React.FC<AuthSelectorProps> = ({ authConfig, setAuthConfig }
     });
   };
 
+  const updateChainedField = (field: keyof AuthConfig, value: any) => {
+    setAuthConfig({ ...authConfig, [field]: value });
+  };
+
+  const addScope = () => {
+    if (newScope.trim()) {
+      const currentScopes = authConfig.tokenRequestScopes || [];
+      if (!currentScopes.includes(newScope.trim())) {
+        updateChainedField('tokenRequestScopes', [...currentScopes, newScope.trim()]);
+      }
+      setNewScope('');
+    }
+  };
+
+  const removeScope = (scopeToRemove: string) => {
+    const currentScopes = authConfig.tokenRequestScopes || [];
+    updateChainedField('tokenRequestScopes', currentScopes.filter(s => s !== scopeToRemove));
+  };
+
+  const addArg = () => {
+    if (newArg.trim()) {
+        const currentArgs = authConfig.constructorArgs || [];
+        if (!currentArgs.includes(newArg.trim())) {
+            updateChainedField('constructorArgs', [...currentArgs, newArg.trim()]);
+        }
+        setNewArg('');
+    }
+  };
+
+  const removeArg = (argToRemove: string) => {
+    const currentArgs = authConfig.constructorArgs || [];
+    updateChainedField('constructorArgs', currentArgs.filter(a => a !== argToRemove));
+  };
+
   return (
     <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
-      <h2 className="text-xl font-bold mb-4 text-cyan-400">Authentication</h2>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-xl font-bold text-cyan-400">Auth Strategy</h2>
+        {authConfig.method === AuthMethod.CHAINED && (
+          <span className="bg-cyan-900/40 text-cyan-400 text-[10px] uppercase font-bold px-2 py-0.5 rounded border border-cyan-500/30">
+            Chained OAuth2
+          </span>
+        )}
+      </div>
       <div className="space-y-4">
         <div>
-          <label htmlFor="authMethod" className="block text-sm font-medium text-gray-400 mb-1">
-            Method
-          </label>
-          <select
-            id="authMethod"
-            value={authConfig.method}
-            onChange={handleMethodChange}
-            className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition"
-          >
-            {AUTH_METHOD_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
+          <label className="block text-xs font-bold text-gray-500 uppercase tracking-widest mb-1">Auth Mechanism</label>
+          <select value={authConfig.method} onChange={handleMethodChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 text-sm">
+            {AUTH_METHOD_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
           </select>
         </div>
 
-        {/* Simple Auth Methods */}
-        {authConfig.method === AuthMethod.BEARER && (
-          <div>
-            <label htmlFor="tokenVariableName" className="block text-sm font-medium text-gray-400 mb-1">Token Variable Name</label>
-            <input type="text" id="tokenVariableName" name="tokenVariableName" value={authConfig.tokenVariableName} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., $apiToken"/>
-          </div>
-        )}
-        {authConfig.method === AuthMethod.BASIC && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="usernameVariableName" className="block text-sm font-medium text-gray-400 mb-1">Username Variable</label>
-              <input type="text" id="usernameVariableName" name="usernameVariableName" value={authConfig.usernameVariableName} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., $username"/>
-            </div>
-            <div>
-              <label htmlFor="passwordVariableName" className="block text-sm font-medium text-gray-400 mb-1">Password Variable</label>
-              <input type="text" id="passwordVariableName" name="passwordVariableName" value={authConfig.passwordVariableName} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., $password"/>
-            </div>
-          </div>
-        )}
-        {authConfig.method === AuthMethod.QUERY && (
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label htmlFor="queryKeyName" className="block text-sm font-medium text-gray-400 mb-1">Query Key Name</label>
-              <input type="text" id="queryKeyName" name="queryKeyName" value={authConfig.queryKeyName} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., api_key"/>
-            </div>
-            <div>
-              <label htmlFor="queryValueName" className="block text-sm font-medium text-gray-400 mb-1">Key Value Variable</label>
-              <input type="text" id="queryValueName" name="queryValueName" value={authConfig.queryValueName} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., $apiKey"/>
-            </div>
-          </div>
-        )}
-
-        {/* Chained Request Auth Method */}
         {authConfig.method === AuthMethod.CHAINED && (
-          <div className="border-t border-cyan-500/20 pt-4 mt-4 space-y-4">
-              <div className="flex items-center gap-2 text-cyan-400">
-                  <LinkIcon className="w-5 h-5"/>
-                  <h3 className="text-lg font-semibold">Token Request Configuration</h3>
+          <div className="space-y-4 animate-fade-in pt-4 border-t border-gray-700">
+              <div className="bg-gray-900/40 p-3 rounded-lg border border-gray-700">
+                  <label className="block text-[10px] font-bold text-gray-500 uppercase mb-2">Required OAuth2 Scopes</label>
+                  <div className="flex gap-2 mb-2">
+                      <input type="text" value={newScope} onChange={(e) => setNewScope(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && addScope()} className="flex-1 bg-gray-800 border border-gray-700 rounded px-2 py-1 text-xs text-cyan-100" placeholder="e.g. read_reviews"/>
+                      <button onClick={addScope} className="bg-cyan-600 p-1 rounded text-white"><PlusIcon className="w-4 h-4"/></button>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                      {(authConfig.tokenRequestScopes || []).map(s => (
+                          <span key={s} className="bg-gray-700 text-cyan-300 text-[9px] px-2 py-0.5 rounded flex items-center gap-1">
+                            {s} <button onClick={() => removeScope(s)} className="text-red-400">×</button>
+                          </span>
+                      ))}
+                  </div>
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-[auto,1fr] gap-4">
-                <div>
-                  <label htmlFor="tokenEndpointMethod" className="block text-sm font-medium text-gray-400 mb-1">Method</label>
-                  <select id="tokenEndpointMethod" name="tokenEndpointMethod" value={authConfig.tokenEndpointMethod} onChange={handleInputChange} className="bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition">
-                      {HTTP_METHODS.map(m => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                </div>
-                <div>
-                  <label htmlFor="tokenEndpointPath" className="block text-sm font-medium text-gray-400 mb-1">Token Endpoint Path</label>
-                  <input type="text" id="tokenEndpointPath" name="tokenEndpointPath" value={authConfig.tokenEndpointPath} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., /oauth/token"/>
-                </div>
-              </div>
+
               <div>
-                  <label htmlFor="requestBody" className="block text-sm font-medium text-gray-400 mb-1">Request Body (JSON)</label>
-                  <textarea id="requestBody" name="requestBody" value={authConfig.requestBody} onChange={handleInputChange} rows={5} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition font-mono text-sm" placeholder='e.g., {"grant_type": "client_credentials"}' />
+                <label className="block text-[10px] font-bold text-gray-500 uppercase mb-1">Token Endpoint</label>
+                <input type="text" name="tokenEndpointPath" value={authConfig.tokenEndpointPath} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-700 rounded-md px-3 py-1.5 text-xs font-mono" />
               </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                <div>
-                  <label htmlFor="tokenPathInResponse" className="block text-sm font-medium text-gray-400 mb-1">Token Path in Response</label>
-                  <input type="text" id="tokenPathInResponse" name="tokenPathInResponse" value={authConfig.tokenPathInResponse} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., access_token"/>
-                  <p className="text-xs text-gray-500 mt-1">Use dot notation for nested keys, e.g., `data.token`</p>
-                </div>
-                <div>
-                  <label htmlFor="schemeInHeader" className="block text-sm font-medium text-gray-400 mb-1">Auth Scheme for Header</label>
-                  <input type="text" id="schemeInHeader" name="schemeInHeader" value={authConfig.schemeInHeader} onChange={handleInputChange} className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition" placeholder="e.g., Bearer"/>
-                </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                  <HeaderEditor label="Auth Headers" headers={authConfig.tokenRequestHeaders || []} onChange={(h) => updateChainedField('tokenRequestHeaders', h)} />
+                  <HeaderEditor label="Auth Params" headers={authConfig.tokenRequestQueryParams || []} onChange={(q) => updateChainedField('tokenRequestQueryParams', q)} />
               </div>
           </div>
         )}

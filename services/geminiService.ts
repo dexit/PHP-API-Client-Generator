@@ -1,12 +1,16 @@
 
 import { GoogleGenAI } from "@google/genai";
-import { AuthConfig, Endpoint, AuthMethod, DatabaseType, AiModelConfig } from '../types';
+import { AuthConfig, Endpoint, AuthMethod, DatabaseType, AiModelConfig, HeaderPair, ContentType, ResilienceConfig, DocConfig } from '../types';
 
 interface GenerationParams {
   authConfig: AuthConfig;
   endpoints: Endpoint[];
   baseUri: string;
   namespace: string;
+  globalHeaders: HeaderPair[];
+  defaultContentType: ContentType;
+  resilienceConfig: ResilienceConfig;
+  docConfig: DocConfig;
 }
 
 export interface ConversationPart {
@@ -19,20 +23,24 @@ const snakeToPascal = (s: string) => s.replace(/(^\w|_\w)/g, m => m.replace('_',
 const getAuthPromptSection = (authConfig: AuthConfig): string => {
   switch (authConfig.method) {
     case AuthMethod.BEARER:
-      return `Implement Bearer Token authentication. The constructor MUST accept a token string (e.g., \`${authConfig.tokenVariableName}\`). This token MUST be passed in the 'Authorization: Bearer <token>' header for every request.`;
+      return `Implement Bearer Token authentication. Constructor requires \`${authConfig.tokenVariableName}\`. Use 'Authorization: Bearer <token>' header.`;
     case AuthMethod.BASIC:
-      return `Implement Basic authentication. The constructor MUST accept username and password strings (e.g., \`${authConfig.usernameVariableName}\`, \`${authConfig.passwordVariableName}\`). These credentials MUST be Base64 encoded and passed in the 'Authorization: Basic <encoded>' header for every request.`;
+      return `Implement Basic authentication. Constructor requires \`${authConfig.usernameVariableName}\` and \`${authConfig.passwordVariableName}\`. Base64 encode and use 'Authorization: Basic <encoded>'.`;
     case AuthMethod.QUERY:
-      return `Implement API Key in Query Parameter authentication. The constructor MUST accept an API key string (e.g., \`${authConfig.queryValueName}\`). This key MUST be added as a query parameter \`${authConfig.queryKeyName}=<key>\` to every request.`;
+      return `Implement API Key in Query Param \`${authConfig.queryKeyName}\`. Constructor requires \`${authConfig.queryValueName}\`.`;
     case AuthMethod.CHAINED:
-      return `Implement a Chained Token authentication flow.
-- The constructor SHOULD accept any credentials needed for the token request (e.g., client ID, secret).
-- A private property, e.g., \`$accessToken\`, should store the fetched token.
-- A public method, e.g., \`authenticate()\`, MUST exist to perform the token request. This method sends a ${authConfig.tokenEndpointMethod} request to \`${authConfig.tokenEndpointPath}\` with the following JSON body: \`${authConfig.requestBody}\`. It must parse the JSON response and extract the token from the path: \`${authConfig.tokenPathInResponse}\`.
-- The main \`sendRequest\` helper MUST check if a token exists. If not, it MUST call \`authenticate()\` first.
-- All subsequent API calls MUST include the 'Authorization: ${authConfig.schemeInHeader} <token>' header.`;
+      const scopeInstruction = authConfig.tokenRequestScopes?.length 
+        ? `\n    - Include a \`scope\` parameter in the token request body: \`${authConfig.tokenRequestScopes.join(' ')}\`.`
+        : '';
+
+      return `Implement high-performance Chained OAuth2 flow:
+- **Dependency Injection**: PSR-16/PSR-6 Cache for persistence.
+- **Acquisition Request**: Send a ${authConfig.tokenEndpointMethod} to \`${authConfig.tokenEndpointPath}\`.
+- **Payload**: ${authConfig.tokenRequestContentType} with template tag injection \`{{key}}\` using constructor args: \`${authConfig.constructorArgs?.join(', ')}\`.
+- **Scopes**: ${scopeInstruction}
+- **Dynamic Extraction**: Use Support\\Arr to find the token at path \`${authConfig.tokenPathInResponse}\`.`;
     default:
-      return 'No authentication is required.';
+      return 'No authentication required.';
   }
 };
 
@@ -42,206 +50,109 @@ const getDtoAndDbPrompts = (endpoints: Endpoint[]): { dtoPrompt: string, dbHandl
     const clientMethodReturns = new Map<string, string>();
     const dbEndpoints = endpoints.filter(ep => ep.dbConfig.enabled && ep.responsePayload);
     
-    // DTOs
-    const endpointsWithPayload = endpoints.filter(ep => ep.responsePayload);
-    const dtoNames = new Set<string>();
-
-    for (const ep of endpointsWithPayload) {
+    for (const ep of endpoints.filter(e => e.responsePayload)) {
         const baseName = snakeToPascal(ep.name.replace(/^get(s?)/, ''));
-        const isList = ep.responsePayload.trim().startsWith('[');
+        const isList = ep.responsePayload!.trim().startsWith('[');
         const dtoName = isList ? `${baseName}Item` : baseName;
         const returnType = isList ? `array<${dtoName}>` : dtoName;
 
-        if (dtoNames.has(dtoName)) continue;
-        dtoNames.add(dtoName);
-
-        dtoPrompt += `
-### DTO Class: ${dtoName}
-- Generate a readonly DTO class named \`${dtoName}\`.
-- Its properties should be derived from the following JSON object structure.
-- All properties MUST be \`public readonly\`.
-- Use native PHP types. For nested objects, generate separate DTO classes if necessary and use them as type hints.
-- JSON for \`${dtoName}\`: \`\`\`json\n${isList ? ep.responsePayload.trim().slice(1, -1).split('},{')[0] + '}' : ep.responsePayload}\n\`\`\`
-`;
+        dtoPrompt += `### DTO: ${dtoName}\nPHP 8.2+ readonly class. Include property type hints and docblocks. Mapped from:\n\`\`\`json\n${ep.responsePayload}\n\`\`\`\n`;
         clientMethodReturns.set(ep.name, returnType);
     }
     
-    // DB Handler
     if (dbEndpoints.length > 0) {
-        dbHandlerPrompt = `
-## Section 4: Database Handler Class
-Generate a class named \`ApiClientDbHandler\`.
-- It MUST have a constructor that accepts a \`\\PDO\` instance.
-- For each DTO that can be persisted, generate a corresponding \`save\` method.
-`;
-        const processedDtosForDb = new Set<string>();
-        for (const ep of dbEndpoints) {
-            const returnType = clientMethodReturns.get(ep.name);
-            if (!returnType || processedDtosForDb.has(returnType)) continue;
-            
-            const dtoName = returnType.includes('array') ? returnType.replace('array<', '').replace('>', '') : returnType;
-            processedDtosForDb.add(dtoName);
-            
-            let upsertSql: string;
-            switch(ep.dbConfig.dbType) {
-                case DatabaseType.POSTGRESQL:
-                case DatabaseType.SQLITE:
-                    upsertSql = 'Use an `INSERT ... ON CONFLICT(id) DO UPDATE SET ...` statement.';
-                    break;
-                case DatabaseType.MARIADB:
-                default:
-                    upsertSql = 'Use an `INSERT ... ON DUPLICATE KEY UPDATE ...` statement.';
-                    break;
-            }
-
-            dbHandlerPrompt += `
-### Method: save${dtoName}
-- Create a public method \`save${dtoName}(\` that accepts one argument: \`${dtoName} \$dto\`.
-- This method persists the DTO data to the \`${ep.dbConfig.tableName}\` table.
-- Assume the DTO has an \`id\` property that is the primary key.
-- The method must perform an "upsert" operation. ${upsertSql}
-- Map the DTO properties to the table columns (assuming snake_case column names from camelCase DTO properties).
-`;
-        }
+        dbHandlerPrompt = `## Persistence Bridge\nGenerate \`ApiClientDbHandler\` injecting a \`PDO\` instance. Methods for: ${dbEndpoints.map(e => `save${snakeToPascal(e.name)}`).join(', ')}. Support upsert (ON DUPLICATE KEY UPDATE or similar) based on ${dbEndpoints[0].dbConfig.dbType}.`;
     }
 
     return { dtoPrompt, dbHandlerPrompt, clientMethodReturns };
 };
 
-const getEndpointsPromptSection = (endpoints: Endpoint[], clientMethodReturns: Map<string, string>): string => {
-  if (endpoints.length === 0) return 'No endpoints specified.';
-  
-  const endpointDetails = endpoints.map(ep => {
-    const pathParams = (ep.path.match(/\{(\w+)\}/g) || []).map(p => p.slice(1, -1));
-    const paramSignature = pathParams.map(p => `string $${p}`).join(', ');
-    
-    let methodArgs = pathParams.length > 0 ? `${paramSignature}, ` : '';
-    if (['POST', 'PUT', 'PATCH'].includes(ep.method)) {
-      methodArgs += 'array $body = []';
-    } else {
-      methodArgs += 'array $queryParams = []';
-    }
+const constructPrompt = (params: GenerationParams): string => {
+  const { dtoPrompt, dbHandlerPrompt, clientMethodReturns } = getDtoAndDbPrompts(params.endpoints);
+  const authPrompt = getAuthPromptSection(params.authConfig);
+  const safeNamespace = params.namespace.replace(/\\/g, '\\\\');
 
-    const returnType = clientMethodReturns.get(ep.name) || 'array';
-    let returnDoc = `* @return ${returnType} The decoded JSON response or a DTO.`;
-    if(returnType !== 'array') {
-        returnDoc += `\n     * @throws ApiClientException On API error.`
-    }
+  const helperDirectives = params.docConfig.includeExtendedHelpers ? `
+## Extended Support Helpers (src/Support/*):
+- \`Support\\Arr\`: Static \`get()\` method for deep array retrieval using dot-notation.
+- \`Support\\Url\`: Safe URI builder with template placeholder substitution.
+- \`Support\\Config\`: Typed, immutable container for client settings.
+` : '';
 
+  const wpDirectives = params.docConfig.includeWpCustomFields ? `
+## Advanced Meta Field Mapping (ACF/SCF):
+- Explicitly support WordPress Advanced Custom Fields (ACF) and Secure Custom Fields (SCF) response patterns.
+- Ensure extraction rules targeting \`acf.*\` or \`scf.*\` paths are handled correctly.
+- Add specific hydration logic to handle potential WP REST API nested objects for these fields.
+` : '';
 
-    return `- **Method:** \`public function ${ep.name}(${methodArgs.trim().replace(/,$/, '')})\`
-  - **HTTP Method:** ${ep.method}
-  - **Path:** \`${ep.path}\` (substitute path variables)
-  - **Parameters:** Handle path params, request body (for POST/PUT/PATCH), and query params appropriately.
-  - **Return Value:** 
-    /**
-     ${returnDoc}
-     */
-    The method MUST return a value of type \`${returnType}\`. If the type is a DTO, instantiate it from the response data. If it is an array of DTOs, return an array of instantiated DTOs.
-    `;
-  }).join('\n');
-  
-  return `## Section 3: API Client Class
-Generate the main client class, \`Client\`.
-- **Constructor:** Inject \`ClientInterface\`, \`RequestFactoryInterface\`, \`StreamFactoryInterface\`, and a \`LoggerInterface\`. Also accept auth credentials.
-- **Helper Method:** Create a private \`sendRequest\` method to encapsulate request creation, sending, and response handling logic. It must perform logging.
-- **Public Methods:** Generate a public method for each of the following endpoints:\n${endpointDetails}`;
-};
-
-
-const constructPrompt = ({ authConfig, endpoints, baseUri, namespace }: GenerationParams): string => {
-  const { dtoPrompt, dbHandlerPrompt, clientMethodReturns } = getDtoAndDbPrompts(endpoints);
-  const authPrompt = getAuthPromptSection(authConfig);
-  const endpointsPrompt = getEndpointsPromptSection(endpoints, clientMethodReturns);
-  const safeNamespace = namespace.replace(/\\/g, '\\\\');
+  const extractionDirectives = params.endpoints.filter(e => e.extractionRules && e.extractionRules.length > 0)
+    .map(e => {
+      const rules = e.extractionRules.map(r => `- Extracted Property \`${r.property}\` from path \`${r.path}\``).join('\n');
+      return `Endpoint \`${e.name}\` dynamic retrieval rules:\n${rules}`;
+    }).join('\n\n');
 
   return `
-You are an expert PHP developer creating a modern, PSR-compliant API client.
-Generate a complete, single PHP file. The output MUST be only valid PHP code. Do NOT add any other text or markdown like \`\`\`php.
+You are a Principal PHP Software Engineer. Your task is to generate a PRODUCTION-READY, PSR-compliant SDK.
+Target PHP: 8.2+. Standard: PSR-3, PSR-7, PSR-17, PSR-18.
+Namespace: \`${safeNamespace}\`.
 
-**PHP Standards:**
-- PHP 8.1+ compatibility.
-- \`declare(strict_types=1);\`.
-- PSR-12 style.
-- Use PSR-3 (Logger), PSR-7 (HTTP Messages), PSR-17 (HTTP Factories), PSR-18 (HTTP Client).
-- Use the namespace \`${safeNamespace}\`.
+Format: --- START OF FILE [filename] ---
 
----
+${helperDirectives}
+${wpDirectives}
 
-**FILE STRUCTURE:**
+**Architecture Guide:**
+- Use strict typing (\`declare(strict_types=1);\`) in every file.
+- Error Handling: Create a base \`ApiClientException\` and specific subclasses for 4xx/5xx/Connection errors.
+- Resilience Strategy: Exponential backoff with ${params.resilienceConfig.maxRetries} max retries and ${params.resilienceConfig.baseDelay}ms base delay.
+- Auth Layer: ${authPrompt}
+- Base URI: \`${params.baseUri}\`.
 
-## Section 1: Exception Class
-- Define a custom exception \`ApiClientException extends \\RuntimeException\`.
+**Dynamic Data Extraction:**
+${extractionDirectives}
+When extraction rules are present, use the \`Support\\Arr::get()\` helper to pull values before returning or persisting data.
 
-${dtoPrompt ? `## Section 2: Data Transfer Objects (DTOs)\n${dtoPrompt}` : ''}
+**File Manifest:**
+- \`composer.json\`: ${params.docConfig.generateComposer ? 'Standard composer definition with PSR dependencies.' : 'Exclude.'}
+- \`README.md\`: ${params.docConfig.generateReadme ? 'High-quality technical documentation with code examples.' : 'Exclude.'}
+- \`src/Client.php\`: The main orchestration hub.
+- \`src/Dto/*.php\`: Clean, typed data objects.
+${dtoPrompt}
+- \`src/Support/Arr.php\`: Robust dot-notation array helper.
+- \`src/Database/ApiClientDbHandler.php\`: ${dbHandlerPrompt ? 'Persistence layer.' : 'Exclude.'}
 
-${endpointsPrompt}
-  - **Base URI:** The base URI is \`${baseUri}\`.
-  - **Authentication:** ${authPrompt}
-  - **Error Handling:** Throw \`ApiClientException\` on non-2xx HTTP status codes.
-  - **Logging:** Use the injected PSR-3 logger to log requests, responses, and errors.
-
-${dbHandlerPrompt}
+Generate ONLY the code package using the specified file delimiters. Ensure the logic for "Reviews & Testimonials" or "WP Custom Fields" is contextually perfect.
 `;
 };
 
-
-export const streamPhpClientCode = async (
-    params: GenerationParams, 
-    modelConfig: AiModelConfig,
-    apiKey: string,
-    onChunk: (chunk: string) => void
-): Promise<void> => {
-  if (!apiKey) {
-    throw new Error('Gemini API key is not configured.');
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
-  const prompt = constructPrompt(params);
-  
-  const generationConfig: any = {
-    temperature: modelConfig.temperature, 
-    topP: modelConfig.topP,
-    topK: modelConfig.topK,
-    responseMimeType: 'text/plain',
-  };
-
-  if (modelConfig.model === 'gemini-2.5-flash' && modelConfig.thinkingBudget && modelConfig.thinkingBudget > 0) {
-      generationConfig.thinkingConfig = { thinkingBudget: modelConfig.thinkingBudget };
-  }
-  
-  try {
-    const response = await ai.models.generateContentStream({
-      model: modelConfig.model,
-      contents: prompt,
-      config: generationConfig,
-    });
-
-    for await (const chunk of response) {
-      onChunk(chunk.text);
-    }
-  } catch (error) {
-    console.error("Error calling Gemini API:", error);
-    if (error.message.includes('SAFETY')) {
-        throw new Error("Failed to generate code due to safety settings. Please adjust your query.");
-    }
-    throw new Error("Failed to generate code. The AI model may be temporarily unavailable or the request was invalid.");
+export const streamPhpClientCode = async (params: GenerationParams, modelConfig: AiModelConfig, onChunk: (chunk: string) => void) => {
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+  const response = await ai.models.generateContentStream({
+    model: modelConfig.model,
+    contents: constructPrompt(params),
+    config: { 
+      temperature: modelConfig.temperature, 
+      topP: modelConfig.topP, 
+      topK: modelConfig.topK,
+      thinkingConfig: modelConfig.thinkingBudget && modelConfig.thinkingBudget > 0 ? { thinkingBudget: modelConfig.thinkingBudget } : undefined
+    },
+  });
+  for await (const chunk of response) {
+      if (chunk.text) onChunk(chunk.text);
   }
 };
 
-export const configSystemInstruction = `You are an expert API design assistant. Your goal is to help a user configure a PHP API client by asking clarifying questions.
-The user will provide an initial description. You must analyze it and ask targeted questions to determine ALL of the following:
-1.  \`baseUri\`: The base URL for the API.
-2.  \`namespace\`: A valid PHP namespace (e.g., App\\Sdk\\MyApi).
-3.  \`authConfig\`: The authentication method. You must determine the \`method\` (one of: 'none', 'bearer', 'basic', 'query', 'chained') and any required fields for that method based on the user's description.
-4.  \`endpoints\`: A list of API endpoints. For each endpoint, you need:
-    - \`name\`: a camelCase function name (e.g., 'getUserById').
-    - \`method\`: An HTTP verb ('GET', 'POST', 'PUT', 'PATCH', 'DELETE').
-    - \`path\`: The URL path (e.g., '/users/{id}').
-    - \`responsePayload\`: A sample JSON string representing the response body. If the user doesn't provide one, create a sensible example.
-    - \`dbConfig\`: Default this to \`{ "enabled": false, "dbType": "mariadb", "tableName": "" }\`.
+export const configSystemInstruction = `You are a Principal SDK Architect working in a collaborative AI environment.
+Task: Help the user configure a complex PHP API SDK.
 
-Ask concise questions, one or two at a time, to avoid overwhelming the user.
-When you are confident you have ALL the necessary information, and ONLY then, respond with a single JSON object enclosed in a \`\`\`json markdown block. This JSON object must be the final configuration and nothing else. The JSON object must have the keys: \`baseUri\`, \`namespace\`, \`authConfig\`, and \`endpoints\`. Do not say anything else before or after the JSON block.
+Collaboration Context:
+A local Insight Agent (Built-in AI) may have pre-analyzed the user's request. Pay close attention to any "LOCAL AI CRITIQUE" provided in the prompt, as it often contains important technical refinements or edge-case considerations based on the immediate project environment.
 
-If you still need information, just ask the next question(s) in plain text.`;
+Context Awareness Rules:
+1. If the user mentions "WordPress", "ACF", or "Custom Fields", automatically suggest extraction rules and the WP field helper.
+2. If the user mentions "Reviews" or "Feedback", propose a schema with ratings, comments, and author metadata.
+3. Be proactive: if an endpoint path has variables like {id}, ensure they are accounted for in the method signature.
+4. Always prioritize PSR-compliant, high-performance code architecture.
+
+Respond ONLY with a JSON configuration block for the app: baseUri, namespace, authConfig, docConfig, endpoints.`;

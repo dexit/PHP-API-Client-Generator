@@ -7,8 +7,6 @@ import { SparklesIcon } from './Icons';
 interface AiModelConfigurationProps {
   config: AiModelConfig;
   setConfig: (config: AiModelConfig) => void;
-  apiKey: string;
-  setApiKey: (key: string) => void;
 }
 
 const Slider: React.FC<{
@@ -22,9 +20,12 @@ const Slider: React.FC<{
     tooltip: string;
 }> = ({ label, id, min, max, step, value, onChange, tooltip }) => (
     <div>
-        <label htmlFor={id} className="block text-sm font-medium text-gray-400 mb-1" title={tooltip}>
-            {label}: <span className="font-mono text-cyan-400">{value}</span>
-        </label>
+        <div className="flex justify-between items-center mb-1">
+            <label htmlFor={id} className="block text-sm font-medium text-gray-400" title={tooltip}>
+                {label}
+            </label>
+            <span className="font-mono text-xs font-bold text-cyan-400 bg-cyan-900/30 px-2 py-0.5 rounded">{value}</span>
+        </div>
         <input
             id={id}
             type="range"
@@ -33,13 +34,13 @@ const Slider: React.FC<{
             step={step}
             value={value}
             onChange={onChange}
-            className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+            className="w-full h-1.5 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-cyan-500"
         />
     </div>
 );
 
 
-const AiModelConfiguration: React.FC<AiModelConfigurationProps> = ({ config, setConfig, apiKey, setApiKey }) => {
+const AiModelConfiguration: React.FC<AiModelConfigurationProps> = ({ config, setConfig }) => {
     
     const handleValueChange = (field: keyof AiModelConfig, value: string | number) => {
         setConfig({ ...config, [field]: typeof value === 'string' ? value : Number(value) });
@@ -49,32 +50,18 @@ const AiModelConfiguration: React.FC<AiModelConfigurationProps> = ({ config, set
         <div className="bg-gray-800 p-6 rounded-xl shadow-lg border border-gray-700">
             <h2 className="text-xl font-bold mb-4 text-cyan-400 flex items-center gap-2">
                 <SparklesIcon className="w-6 h-6" />
-                AI Model Settings
+                AI Generation Settings
             </h2>
-            <div className="space-y-4">
-                <div>
-                    <label htmlFor="apiKey" className="block text-sm font-medium text-gray-400 mb-1">
-                        Gemini API Key
-                    </label>
-                    <input
-                        id="apiKey"
-                        type="password"
-                        value={apiKey}
-                        onChange={(e) => setApiKey(e.target.value)}
-                        className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition"
-                        placeholder="Enter your Gemini API Key"
-                    />
-                </div>
-
+            <div className="space-y-5">
                 <div>
                     <label htmlFor="model" className="block text-sm font-medium text-gray-400 mb-1">
-                        Model
+                        Select Model
                     </label>
                     <select
                         id="model"
                         value={config.model}
                         onChange={(e) => handleValueChange('model', e.target.value)}
-                        className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition"
+                        className="w-full bg-gray-900 border border-gray-600 rounded-md px-3 py-2 focus:ring-2 focus:ring-cyan-500 focus:border-cyan-500 transition text-sm"
                     >
                         {AVAILABLE_MODELS.map((option) => (
                             <option key={option.value} value={option.value}>
@@ -84,43 +71,43 @@ const AiModelConfiguration: React.FC<AiModelConfigurationProps> = ({ config, set
                     </select>
                 </div>
 
-                <Slider
-                    id="temperature"
-                    label="Temperature"
-                    min={0} max={1} step={0.1}
-                    value={config.temperature}
-                    onChange={(e) => handleValueChange('temperature', e.target.value)}
-                    tooltip="Controls randomness. Lower values are more deterministic."
-                />
+                <div className="grid grid-cols-1 gap-4">
+                    <Slider
+                        id="temperature"
+                        label="Temperature"
+                        min={0} max={1} step={0.05}
+                        value={config.temperature}
+                        onChange={(e) => handleValueChange('temperature', e.target.value)}
+                        tooltip="Controls randomness. Lower values are more deterministic and better for code."
+                    />
 
-                <Slider
-                    id="topP"
-                    label="Top-P"
-                    min={0.1} max={1} step={0.1}
-                    value={config.topP}
-                    onChange={(e) => handleValueChange('topP', e.target.value)}
-                    tooltip="Cumulative probability cutoff for token selection."
-                />
+                    <Slider
+                        id="topP"
+                        label="Top-P"
+                        min={0.1} max={1} step={0.05}
+                        value={config.topP}
+                        onChange={(e) => handleValueChange('topP', e.target.value)}
+                        tooltip="Cumulative probability cutoff for token selection."
+                    />
 
-                <Slider
-                    id="topK"
-                    label="Top-K"
-                    min={1} max={128} step={1}
-                    value={config.topK}
-                    onChange={(e) => handleValueChange('topK', e.target.value)}
-                    tooltip="Sample from the K most likely tokens."
-                />
-                
-                {config.model === 'gemini-2.5-flash' && (
+                    <Slider
+                        id="topK"
+                        label="Top-K"
+                        min={1} max={100} step={1}
+                        value={config.topK}
+                        onChange={(e) => handleValueChange('topK', e.target.value)}
+                        tooltip="Sample from the K most likely tokens."
+                    />
+                    
                     <Slider
                         id="thinkingBudget"
                         label="Thinking Budget"
-                        min={0} max={500} step={10}
+                        min={0} max={20000} step={100}
                         value={config.thinkingBudget || 0}
                         onChange={(e) => handleValueChange('thinkingBudget', e.target.value)}
-                        tooltip="Allocates tokens for preliminary processing to improve response quality. 0 disables it."
+                        tooltip="Allocates tokens for reasoning. Higher values can improve code logic. 0 disables it."
                     />
-                )}
+                </div>
             </div>
         </div>
     );

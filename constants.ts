@@ -1,5 +1,5 @@
 
-import { AuthMethod, DatabaseType, HttpMethod } from './types';
+import { AuthMethod, DatabaseType, HttpMethod, ContentType } from './types';
 
 export const AUTH_METHOD_OPTIONS = [
   { value: AuthMethod.NONE, label: 'No Authentication' },
@@ -15,8 +15,15 @@ export const DATABASE_TYPE_OPTIONS = [
     { value: DatabaseType.SQLITE, label: 'SQLite' },
 ];
 
+export const CONTENT_TYPE_OPTIONS: { value: ContentType, label: string }[] = [
+    { value: 'application/json', label: 'JSON (application/json)' },
+    { value: 'application/x-www-form-urlencoded', label: 'Form (x-www-form-urlencoded)' },
+    { value: 'text/plain', label: 'Plain Text (text/plain)' },
+];
+
 export const HTTP_METHODS: HttpMethod[] = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
 
 export const AVAILABLE_MODELS = [
-    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash (Fast)' },
+    { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro (High Quality)' },
 ];
